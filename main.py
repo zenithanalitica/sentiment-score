@@ -59,17 +59,27 @@ def get_tweets(driver: neo4j.Driver, skip: int, batch_size: int) -> list[Tweet]:
 
 
 def calculate_scores(model, tokenizer, text: str) -> tuple[Labels, float]:
+    # Get the device that the model is on (CPU or GPU)
+    device = next(model.parameters()).device
+
+    # Tokenize and move to device
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+
     with torch.no_grad():
         outputs = model(**inputs)
 
-    scores = outputs.logits[0].softmax(dim=0).numpy()
-    labels = Labels(
-        float(scores[0]),
-        float(scores[1]),
-        float(scores[2]),
-    )
+    # Keep computation on GPU
+    scores = outputs.logits[0].softmax(dim=0)
 
+    # Only move to CPU at the end
+    scores_np = scores.cpu().numpy()
+
+    labels = Labels(
+        float(scores_np[0]),
+        float(scores_np[1]),
+        float(scores_np[2]),
+    )
     sentiment_score = round(labels.pos - labels.neg, 4)
     return (labels, sentiment_score)
 

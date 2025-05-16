@@ -85,41 +85,63 @@ def calculate_scores(model, tokenizer, text: str) -> tuple[Labels, float]:
 
 
 def update_sentiment(
-    driver: neo4j.Driver, tweet: Tweet, labels: Labels, sentiment_score: float
+    driver: neo4j.Driver,
+    tweets: list[Tweet],
+    labels: list[Labels],
+    sentiment_scores: list[float],
 ) -> None:
-    # Find the maximum value and set sentiment label directly
-    values = {
-        "positive": labels.pos,
-        "neutral": labels.neu,
-        "negative": labels.neg,
-    }
-    sentiment_label = cast(str, max(values, key=values.get))  # pyright: ignore[reportArgumentType, reportCallIssue]
+    sentiment_labels: list[str] = []
+    positives: list[float] = []
+    neutrals: list[float] = []
+    negatives: list[float] = []
+    node_ids: list[str] = []
+    ids: list[str] = []
+
+    for label in labels:
+        # Find the maximum value and set sentiment label directly
+        value = {
+            "positive": label.pos,
+            "neutral": label.neu,
+            "negative": label.neg,
+        }
+        sentiment_label = cast(str, max(value, key=value.get))  # pyright: ignore[reportArgumentType, reportCallIssue]
+        sentiment_labels.append(sentiment_label)
+        positives.append(label.pos)
+        neutrals.append(label.neu)
+        negatives.append(label.neg)
+
+    for tweet in tweets:
+        node_ids.append(tweet.node_id)
+        ids.append(tweet.tweet_id)
 
     update_query: LiteralString = """
-            MATCH (t:Tweet) WHERE elementId(t) = $node_id
-            SET t.positive = $pos,
-                t.neutral = $neu,
-                t.negative = $neg,
-                t.sentiment_score = $score,
-                t.sentiment_label = $label,
-                t.id = $tweet_id
+            UNWIND $node_ids as node_id, $positives as pos, $neutrals as neu, $negatives as neg, $scores as score, $labels as label $ids as id
+            MATCH (t:Tweet) WHERE elementId(t) = node_ids
+            SET t.positive = pos,
+                t.neutral = neu,
+                t.negative = neg,
+                t.sentiment_score = score,
+                t.sentiment_label = label,
+                t.id = tweet_id
         """
 
     _ = driver.execute_query(
         update_query,
-        node_id=tweet.node_id,
-        pos=labels.pos,  # Fixed variable name from label to labels
-        neu=labels.neu,
-        neg=labels.neg,
-        score=sentiment_score,
-        label=sentiment_label,
-        tweet_id=tweet.tweet_id,
+        node_ids=node_ids,
+        positives=positives,  # Fixed variable name from label to labels
+        neutrals=neutrals,
+        negatives=negatives,
+        score=sentiment_scores,
+        label=sentiment_labels,
+        ids=ids,
     )
 
 
 def main() -> None:
     batch_size = 1000
     skip = 0
+    labels: list[Labels] = []
+    sentiment_scores: list[float] = []
 
     # ————— Load model & tokenizer —————
     model_name = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
@@ -132,21 +154,23 @@ def main() -> None:
         driver.verify_connectivity()
         assert driver.verify_authentication()
 
-        while True:
-            tweets = get_tweets(driver, skip, batch_size)
-            if not tweets:
-                # No more tweets to process
-                break
+        # while True:
+        tweets = get_tweets(driver, skip, batch_size)
+        # if not tweets:
+        #     # No more tweets to process
+        #     break
 
-            # Show progress bar, no other prints
-            for tweet in tqdm(
-                tweets, desc=f"Processing batch {skip // batch_size + 1}", unit="tweet"
-            ):
-                text = preprocess(tweet.text)
-                labels, sentiment_score = calculate_scores(model, tokenizer, text)
-                update_sentiment(driver, tweet, labels, sentiment_score)
+        # Show progress bar, no other prints
+        for tweet in tqdm(
+            tweets, desc=f"Processing batch {skip // batch_size + 1}", unit="tweet"
+        ):
+            text = preprocess(tweet.text)
+            label, sentiment_score = calculate_scores(model, tokenizer, text)
+            labels.append(label)
+            sentiment_scores.append(sentiment_score)
 
             skip += batch_size
+        update_sentiment(driver, tweets, labels, sentiment_scores)
 
 
 if __name__ == "__main__":

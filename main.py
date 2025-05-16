@@ -1,10 +1,13 @@
 from dataclasses import dataclass
-from typing import cast, Annotated
+from typing import cast
+
 import requests
-from requests.auth import HTTPBasicAuth
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
+from requests.auth import HTTPBasicAuth
 from tqdm import tqdm
+from transformers import AutoModelForSequenceClassification, AutoTokenizer  # pyright: ignore[reportPrivateImportUsage]
+import sentencepiece
+
 import secret
 
 
@@ -33,8 +36,9 @@ def preprocess(text: str) -> str:
 
 # ————— Load model & tokenizer —————
 model_name = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
-tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
-model = AutoModelForSequenceClassification.from_pretrained(model_name)
+# Explicitly set use_fast=False and legacy=True to avoid tiktoken compatibility issues in Python 3.13
+tokenizer = AutoTokenizer.from_pretrained(model_name)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+model = AutoModelForSequenceClassification.from_pretrained(model_name)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
 
 
 def get_tweets(auth: HTTPBasicAuth, skip: int, batch_size: int) -> list[Tweet]:

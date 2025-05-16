@@ -88,7 +88,7 @@ def update_sentiment(
     sentiment_label = cast(str, max(values, key=values.get))  # pyright: ignore[reportArgumentType, reportCallIssue]
 
     update_query: LiteralString = """
-            MATCH (t:Tweet) WHERE id(t) = $node_id
+            MATCH (t:Tweet) WHERE elementId(t) = $node_id
             SET t.positive = $pos,
                 t.neutral = $neu,
                 t.negative = $neg,
@@ -97,7 +97,7 @@ def update_sentiment(
                 t.id = $tweet_id
         """
 
-    summary = driver.execute_query(
+    _ = driver.execute_query(
         update_query,
         node_id=tweet.node_id,
         pos=labels.pos,  # Fixed variable name from label to labels
@@ -106,13 +106,6 @@ def update_sentiment(
         score=sentiment_score,
         label=sentiment_label,
         tweet_id=tweet.tweet_id,
-    ).summary
-
-    print(
-        "Created {nodes_created} nodes in {time} ms.".format(
-            nodes_created=summary.counters.nodes_created,
-            time=summary.result_available_after,
-        )
     )
 
 

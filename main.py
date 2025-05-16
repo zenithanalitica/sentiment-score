@@ -1,31 +1,43 @@
+from dataclasses import dataclass
+from typing import cast, Annotated
 import requests
 from requests.auth import HTTPBasicAuth
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
-import numpy as np
 from tqdm import tqdm
 import secret
 
-def preprocess(text):
-    new_text = []
+
+@dataclass
+class Tweet:
+    node_id: str
+    text: str
+    tweet_id: str
+
+
+@dataclass
+class Labels:
+    neg: float
+    neu: float
+    pos: float
+
+
+def preprocess(text: str) -> str:
+    new_text: list[str] = []
     for t in text.split(" "):
-        t = '@user' if t.startswith('@') and len(t) > 1 else t
-        t = 'http' if t.startswith('http') else t
+        t = "@user" if t.startswith("@") and len(t) > 1 else t
+        t = "http" if t.startswith("http") else t
         new_text.append(t)
     return " ".join(new_text)
+
 
 # ————— Load model & tokenizer —————
 model_name = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
 tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
-model     = AutoModelForSequenceClassification.from_pretrained(model_name)
+model = AutoModelForSequenceClassification.from_pretrained(model_name)
 
-# ————— Neo4j HTTP setup —————
-auth = HTTPBasicAuth("neo4j", secret.password)
 
-batch_size = 1000
-skip = 0
-
-while True:
+def get_tweets(auth: HTTPBasicAuth, skip: int, batch_size: int) -> list[Tweet]:
     # Fetch a batch of tweets
     batch_query = {
         "statements": [
@@ -41,63 +53,94 @@ while True:
 
     response = requests.post(secret.url, json=batch_query, auth=auth)
     data = response.json()
-    tweets = [
-        {"node_id": row["row"][0], "text": row["row"][1], "tweet_id": row["row"][2]}
+    tweets: list[Tweet] = [
+        Tweet(row["row"][0], row["row"][1], row["row"][2])
         for row in data["results"][0]["data"]
     ]
 
-    if not tweets:
-        # No more tweets to process
-        break
+    return tweets
 
-    # Show progress bar, no other prints
-    for tweet in tqdm(tweets, desc=f"Processing batch {skip // batch_size + 1}", unit="tweet"):
-        node_id = tweet["node_id"]
-        tweet_long_id = tweet["tweet_id"]
-        raw_text = tweet["text"]
-        text = preprocess(raw_text)
 
-        inputs  = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-        with torch.no_grad():
-            outputs = model(**inputs)
+def calculate_scores(text: str) -> tuple[Labels, float]:
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    with torch.no_grad():
+        outputs = model(**inputs)
 
-        scores = outputs.logits[0].softmax(dim=0).numpy()
-        neg, neu, pos = float(scores[0]), float(scores[1]), float(scores[2])
+    scores = outputs.logits[0].softmax(dim=0).numpy()
+    labels = Labels(
+        float(scores[0]),
+        float(scores[1]),
+        float(scores[2]),
+    )
 
-        sentiment_score = round(pos - neg, 4)
+    sentiment_score = round(labels.pos - labels.neg, 4)
+    return (labels, sentiment_score)
 
-        max_idx = np.argmax([neg, neu, pos])
-        label_map = {0: "negative", 1: "neutral", 2: "positive"}
-        sentiment_label = label_map[max_idx]
 
-        update_query = {
-            "statements": [
-                {
-                    "statement": """
-                        MATCH (t:Tweet) WHERE id(t) = $node_id
-                        SET t.positive = $pos,
-                            t.neutral = $neu,
-                            t.negative = $neg,
-                            t.sentiment_score = $score,
-                            t.sentiment_label = $label,
-                            t.id = $tweet_id
-                    """,
-                    "parameters": {
-                        "node_id": node_id,
-                        "pos": pos,
-                        "neu": neu,
-                        "neg": neg,
-                        "score": sentiment_score,
-                        "label": sentiment_label,
-                        "tweet_id": tweet_long_id
-                    }
-                }
-            ]
-        }
+def update_sentiment(
+    auth: HTTPBasicAuth, tweet: Tweet, labels: Labels, sentiment_score: float
+) -> None:
+    # Find the maximum value and set sentiment label directly
+    values = {
+        "positive": labels.pos,
+        "neutral": labels.neu,
+        "negative": labels.neg,
+    }
+    sentiment_label = cast(str, max(values, key=values.get))  # pyright: ignore[reportArgumentType, reportCallIssue]
 
-        update_response = requests.post(secret.url, json=update_query, auth=auth)
-        if update_response.status_code != 200:
-            # Optionally handle or log errors here without printing
-            pass
+    update_query = {
+        "statements": [
+            {
+                "statement": """
+                                MATCH (t:Tweet) WHERE id(t) = $node_id
+                                SET t.positive = $pos,
+                                    t.neutral = $neu,
+                                    t.negative = $neg,
+                                    t.sentiment_score = $score,
+                                    t.sentiment_label = $label,
+                                    t.id = $tweet_id
+                            """,
+                "parameters": {
+                    "node_id": tweet.node_id,
+                    "pos": labels.pos,  # Fixed variable name from label to labels
+                    "neu": labels.neu,
+                    "neg": labels.neg,
+                    "score": sentiment_score,
+                    "label": sentiment_label,
+                    "tweet_id": tweet.tweet_id,
+                },
+            }
+        ]
+    }
 
-    skip += batch_size
+    update_response = requests.post(secret.url, json=update_query, auth=auth)
+    if update_response.status_code != 200:
+        # Optionally handle or log errors here without printing
+        pass
+
+
+def main() -> None:
+    batch_size = 1000
+    skip = 0
+    # ————— Neo4j HTTP setup —————
+    auth = HTTPBasicAuth("neo4j", secret.password)
+
+    while True:
+        tweets = get_tweets(auth, skip, batch_size)
+        if not tweets:
+            # No more tweets to process
+            break
+
+        # Show progress bar, no other prints
+        for tweet in tqdm(
+            tweets, desc=f"Processing batch {skip // batch_size + 1}", unit="tweet"
+        ):
+            text = preprocess(tweet.text)
+            labels, sentiment_score = calculate_scores(text)
+            update_sentiment(auth, tweet, labels, sentiment_score)
+
+        skip += batch_size
+
+
+if __name__ == "__main__":
+    main()

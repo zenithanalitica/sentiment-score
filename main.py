@@ -2,15 +2,13 @@ from dataclasses import dataclass
 from typing import LiteralString, cast
 
 import neo4j
-import requests
-import sentencepiece
+
 import torch
 from neo4j import GraphDatabase
-from requests.auth import HTTPBasicAuth
 from tqdm import tqdm
-from transformers import (  # pyright: ignore[reportPrivateImportUsage]
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
+from transformers import (
+    AutoModelForSequenceClassification,  # pyright: ignore[reportPrivateImportUsage]
+    AutoTokenizer,  # pyright: ignore[reportPrivateImportUsage]
 )
 
 import secret

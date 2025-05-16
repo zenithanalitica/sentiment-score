@@ -128,7 +128,8 @@ def main() -> None:
 
     # ————— Neo4j HTTP setup —————
     with GraphDatabase.driver(secret.url, auth=("neo4j", secret.password)) as driver:
-        assert driver.verify_connectivity()
+        driver.verify_connectivity()
+        assert driver.verify_authentication()
 
         while True:
             tweets = get_tweets(driver, skip, batch_size)

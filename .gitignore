@@ -9,3 +9,4 @@ secret.py
 
 # Virtual environments
 .venv
+.ipynb_checkpoints/

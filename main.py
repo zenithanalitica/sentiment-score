@@ -1,35 +1,37 @@
-from dataclasses import dataclass
-from typing import LiteralString, cast
-
-import neo4j
-
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, AutoConfig
+from datasets import Dataset
 import torch
-from neo4j import GraphDatabase
+import pandas as pd
+import numpy as np
 from tqdm import tqdm
-from transformers import (
-    AutoModelForSequenceClassification,  # pyright: ignore[reportPrivateImportUsage]
-    AutoTokenizer,  # pyright: ignore[reportPrivateImportUsage]
-)
+from torch.utils.data import DataLoader
+from scipy.special import softmax
 
-import secret
+# === Paths ===
+input_path = "/kaggle/input/split/full_length_tweets_part_1.pkl"
+output_path_pkl = "/kaggle/working/bert_tweets_classified_part_1.pkl"
+output_path_csv = "/kaggle/working/bert_tweets_classified_part_1.csv"
+
+# === Load and clean data ===
+df = pd.read_pickle(input_path)
+df = df[df["text"].apply(lambda x: isinstance(x, str))].reset_index(drop=True)
+
+df = df.iloc[:500].copy()
+
+# Convert to Hugging Face Dataset
+dataset = Dataset.from_pandas(df[["text"]])
+
+# === Load model, tokenizer, and config ===
+model_name = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+config = AutoConfig.from_pretrained(model_name)
+model = AutoModelForSequenceClassification.from_pretrained(model_name).to("cuda")
+model.eval()
 
 
-@dataclass
-class Tweet:
-    node_id: str
-    text: str
-    tweet_id: str
-
-
-@dataclass
-class Labels:
-    neg: float
-    neu: float
-    pos: float
-
-
-def preprocess(text: str) -> str:
-    new_text: list[str] = []
+# === Preprocess function ===
+def preprocess(text):
+    new_text = []
     for t in text.split(" "):
         t = "@user" if t.startswith("@") and len(t) > 1 else t
         t = "http" if t.startswith("http") else t
@@ -37,141 +39,47 @@ def preprocess(text: str) -> str:
     return " ".join(new_text)
 
 
-def get_tweets(driver: neo4j.Driver, skip: int, batch_size: int) -> list[Tweet]:
-    # Fetch a batch of tweets
-    batch_query = cast(
-        LiteralString,
-        f"""
-            MATCH (t:Tweet)
-            RETURN elementId(t) AS node_id, t.text AS text, t.id AS tweet_id
-            SKIP {skip} LIMIT {batch_size}
-        """,
-    )
-
-    records, _, _ = driver.execute_query(
-        batch_query,
-        database_="neo4j",
-    )
-    tweets: list[Tweet] = [
-        Tweet(tweet["node_id"], tweet["text"], tweet["tweet_id"]) for tweet in records
-    ]
-    return tweets
+df["text"] = df["text"].apply(preprocess)
 
 
-def calculate_scores(model, tokenizer, text: str) -> tuple[Labels, float]:
-    # Get the device that the model is on (CPU or GPU)
-    device = next(model.parameters()).device
-
-    # Tokenize and move to device
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-
-    with torch.no_grad():
-        outputs = model(**inputs)
-
-    # Keep computation on GPU
-    scores = outputs.logits[0].softmax(dim=0)
-
-    # Only move to CPU at the end
-    scores_np = scores.cpu().numpy()
-
-    labels = Labels(
-        float(scores_np[0]),
-        float(scores_np[1]),
-        float(scores_np[2]),
-    )
-    sentiment_score = round(labels.pos - labels.neg, 4)
-    return (labels, sentiment_score)
-
-
-def update_sentiment(
-    driver: neo4j.Driver,
-    tweets: list[Tweet],
-    labels: list[Labels],
-    sentiment_scores: list[float],
-) -> None:
-    sentiment_labels: list[str] = []
-    positives: list[float] = []
-    neutrals: list[float] = []
-    negatives: list[float] = []
-    node_ids: list[str] = []
-    ids: list[str] = []
-
-    for label in labels:
-        # Find the maximum value and set sentiment label directly
-        value = {
-            "positive": label.pos,
-            "neutral": label.neu,
-            "negative": label.neg,
-        }
-        sentiment_label = cast(str, max(value, key=value.get))  # pyright: ignore[reportArgumentType, reportCallIssue]
-        sentiment_labels.append(sentiment_label)
-        positives.append(label.pos)
-        neutrals.append(label.neu)
-        negatives.append(label.neg)
-
-    for tweet in tweets:
-        node_ids.append(tweet.node_id)
-        ids.append(tweet.tweet_id)
-
-    update_query: LiteralString = """
-            UNWIND $node_ids as node_id, $positives as pos, $neutrals as neu, $negatives as neg, $scores as score, $labels as label $ids as id
-            MATCH (t:Tweet) WHERE elementId(t) = node_ids
-            SET t.positive = pos,
-                t.neutral = neu,
-                t.negative = neg,
-                t.sentiment_score = score,
-                t.sentiment_label = label,
-                t.id = tweet_id
-        """
-
-    _ = driver.execute_query(
-        update_query,
-        node_ids=node_ids,
-        positives=positives,  # Fixed variable name from label to labels
-        neutrals=neutrals,
-        negatives=negatives,
-        score=sentiment_scores,
-        label=sentiment_labels,
-        ids=ids,
+# === Tokenization ===
+def tokenize(batch):
+    return tokenizer(
+        batch["text"], padding="max_length", truncation=True, max_length=256
     )
 
 
-def main() -> None:
-    batch_size = 1000
-    skip = 0
-    labels: list[Labels] = []
-    sentiment_scores: list[float] = []
+tokenized_dataset = dataset.map(tokenize, batched=True)
+tokenized_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+dataloader = DataLoader(tokenized_dataset, batch_size=128)
 
-    # ————— Load model & tokenizer —————
-    model_name = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
-    # Explicitly set use_fast=False and legacy=True to avoid tiktoken compatibility issues in Python 3.13
-    tokenizer = AutoTokenizer.from_pretrained(model_name)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-    model = AutoModelForSequenceClassification.from_pretrained(model_name)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+# === Inference ===
+all_preds = []
+all_scores = []
 
-    # ————— Neo4j HTTP setup —————
-    with GraphDatabase.driver(secret.url, auth=("neo4j", secret.password)) as driver:
-        driver.verify_connectivity()
-        assert driver.verify_authentication()
+with torch.no_grad():
+    for batch in tqdm(dataloader, desc="Classifying"):
+        input_ids = batch["input_ids"].to("cuda")
+        attention_mask = batch["attention_mask"].to("cuda")
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+        logits = outputs.logits.cpu().numpy()
+        probs = softmax(logits, axis=1)  # shape (batch_size, num_classes)
+        preds = np.argmax(probs, axis=1)
 
-        # while True:
-        tweets = get_tweets(driver, skip, batch_size)
-        # if not tweets:
-        #     # No more tweets to process
-        #     break
+        all_preds.extend(preds)
+        all_scores.extend(probs)
 
-        # Show progress bar, no other prints
-        for tweet in tqdm(
-            tweets, desc=f"Processing batch {skip // batch_size + 1}", unit="tweet"
-        ):
-            text = preprocess(tweet.text)
-            label, sentiment_score = calculate_scores(model, tokenizer, text)
-            labels.append(label)
-            sentiment_scores.append(sentiment_score)
+# === Add predictions and scores to DataFrame ===
+label_map = config.id2label
+df["sentiment"] = [label_map[p] for p in all_preds]
+df["sentiment_scores"] = all_scores  # This will be a column of arrays
 
-            skip += batch_size
-        update_sentiment(driver, tweets, labels, sentiment_scores)
+# Optional: Split scores into separate columns
+score_labels = [label_map[i] for i in range(len(label_map))]
+score_array = np.array(all_scores)
+for i, label in enumerate(score_labels):
+    df[f"score_{label.lower()}"] = score_array[:, i]
 
-
-if __name__ == "__main__":
-    main()
+# === Save Results ===
+df.to_csv(output_path_csv, index=False)
+df.to_pickle(output_path_pkl)

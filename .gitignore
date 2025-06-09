@@ -13,4 +13,4 @@ secret.py
 
 # Secrets
 credentials.py
-.env
+credentials.env

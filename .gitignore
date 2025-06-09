@@ -10,3 +10,7 @@ secret.py
 # Virtual environments
 .venv
 .ipynb_checkpoints/
+
+# Secrets
+credentials.py
+.env

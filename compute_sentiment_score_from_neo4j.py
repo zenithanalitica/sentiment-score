@@ -1,5 +1,6 @@
 import sys
 import os
+from dotenv import load_dotenv
 
 import neo4j
 
@@ -13,9 +14,11 @@ from tqdm import tqdm
 MODEL_NAME = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
 
 # Neo4j
-NEO4J_BOLT_URL = "bolt://neo4j.cych.eu:7687"
-NEO4J_USER = "neo4j"
-NEO4J_PASSWORD = "eGWdum0XyE" # Consider using environment variables for sensitive credentials
+_ = load_dotenv()
+
+NEO4J_BOLT_URL = os.getenv("NEO4J_BOLT_URL")
+NEO4J_USER = os.getenv("NEO4J_USER")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
 # Batching
 NEO4J_FETCH_BATCH_SIZE = 10000

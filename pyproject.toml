@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "datasets>=3.6.0",
+    "dotenv>=0.9.9",
     "neo4j",
     "numpy>=2.2.5",
     "pandas>=2.2.3",

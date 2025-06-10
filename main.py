@@ -1,5 +1,6 @@
 import sys
 import os
+from typing import cast
 from dotenv import load_dotenv
 
 import neo4j
@@ -16,9 +17,9 @@ MODEL_NAME = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
 # Neo4j
 _ = load_dotenv()
 
-NEO4J_BOLT_URL = os.getenv("NEO4J_BOLT_URL")
-NEO4J_USER = os.getenv("NEO4J_USER")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
+NEO4J_BOLT_URL = "bolt://" + cast(str, os.getenv("NEO4J_URI"))
+NEO4J_USER = cast(str, os.getenv("NEO4J_USERNAME"))
+NEO4J_PASSWORD = cast(str, os.getenv("NEO4J_PASSWORD"))
 
 # Batching
 NEO4J_FETCH_BATCH_SIZE = 10000
@@ -27,12 +28,14 @@ INFERENCE_BATCH_SIZE = 64
 # Progress Tracking
 PROGRESS_FILE = "sentiment_progress.txt"
 
+
 # --- Device Configuration ---
 def configure_device() -> torch.device:
     """Configures and returns the appropriate torch device (CUDA if available, else CPU)."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     return device
+
 
 # --- Pre-Process function recommended by the authors ---
 def preprocess(text: str) -> str:
